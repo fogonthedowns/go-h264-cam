@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"os/exec"
-	"strconv"
 	"sync"
 )
 
@@ -14,6 +13,9 @@ const (
 	readBufferSize = 4096
 	bufferSizeKB   = 256
 
+	// ffmpeg -f v4l2 -i /dev/video0 -c:v libx264 -f h264 -y output.h264
+	h226cmd = "ffmpeg"
+        maxRestartAttempts = 3
 	legacyCommand    = "raspivid"
 	libcameraCommand = "libcamera-vid"
 )
@@ -34,12 +36,14 @@ type CameraOptions struct {
 
 // Video streams the video for the Raspberry Pi camera to a websocket
 func Video(options CameraOptions, writer io.Writer, connectionsChange chan int) {
+	log.Println("Entered Video function")
 	stopChan := make(chan struct{})
 	defer close(stopChan)
 	cameraStarted := sync.Mutex{}
 	firstConnection := true
 
 	for n := range connectionsChange {
+		log.Println("Number of connections changed to:", n)
 		if n == 0 {
 			firstConnection = true
 			stopChan <- struct{}{}
@@ -51,32 +55,39 @@ func Video(options CameraOptions, writer io.Writer, connectionsChange chan int) 
 }
 
 func startCamera(options CameraOptions, writer io.Writer, stop <-chan struct{}, mutex *sync.Mutex) {
+	log.Println("Starting the camera...")
 	mutex.Lock()
 	defer mutex.Unlock()
-	defer log.Println("Stopped raspivid")
+	defer log.Println("Stopped camera")
+    restartAttempts := 0
 
+        for restartAttempts < maxRestartAttempts {
+		if err := runCamera(options, writer, stop); err != nil {
+	        restartAttempts++
+	        log.Printf("Camera error (attempt %d/%d): %v", restartAttempts, maxRestartAttempts, err)
+        } else {
+	    restartAttempts = 0 // reset if successful
+	   }
+	}
+
+}
+
+func runCamera(options CameraOptions, writer io.Writer, stop <-chan struct{}) error {
 	args := []string{
-		"--inline", // H264: Force PPS/SPS header with every I frame
-		"-t", "0",  // Disable timeout
-		"-o", "-", // Output to stdout
-		"--flush", // Flush output files immediately
-		"--width", strconv.Itoa(options.Width),
-		"--height", strconv.Itoa(options.Height),
-		"--framerate", strconv.Itoa(options.Fps),
-		"-n",                    // Do not show a preview window
-		"--profile", "baseline", // H264 profile
-	}
-
-	if options.HorizontalFlip {
-		args = append(args, "--hflip")
-	}
-	if options.VerticalFlip {
-		args = append(args, "--vflip")
-	}
-	if options.Rotation != 0 {
-		args = append(args, "--rotation")
-		args = append(args, strconv.Itoa(options.Rotation))
-	}
+			"-f", "v4l2",
+			"-i", "/dev/video0",
+			"-c:v", "libx264",
+			"-f", "h264",
+			"-an", // ignore audio
+			 "-b:v", "50k",
+			 "-preset", "veryfast",
+			//"-preset veryfast",
+			//"-b:v 1000k",
+			//"-s 1280x720",
+			"-s", "640x480",
+			"-r", "15",
+			"-",
+		}
 
 	command := determineCameraCommand(options)
 
@@ -88,11 +99,23 @@ func startCamera(options CameraOptions, writer io.Writer, stop <-chan struct{}, 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Println(err)
-		return
+		return err
 	}
-	if err := cmd.Start(); err != nil {
+
+	stderr, _ := cmd.StderrPipe()
+        go func() {
+		buf := make([]byte, 1024)
+		for {
+		n, _ := stderr.Read(buf)
+		if n >0 {
+			log.Printf("ffmpeg stderr: %s", buf[:n])
+		}
+          }
+        }()
+
+        if err := cmd.Start(); err != nil {
 		log.Print(err)
-		return
+		return err
 	}
 	log.Println("Started "+command, cmd.Args)
 
@@ -105,13 +128,13 @@ func startCamera(options CameraOptions, writer io.Writer, stop <-chan struct{}, 
 		select {
 		case <-stop:
 			log.Println("Stop requested")
-			return
+			return nil
 		default:
 			n, err := stdout.Read(p)
 			if err != nil {
 				if err == io.EOF {
 					log.Println("[" + command + "] EOF")
-					return
+					return err
 				}
 				log.Println(err)
 			}
@@ -132,17 +155,26 @@ func startCamera(options CameraOptions, writer io.Writer, stop <-chan struct{}, 
 				// Boadcast before the NAL
 				broadcast := make([]byte, nalIndex)
 				copy(broadcast, buffer)
-				writer.Write(broadcast)
+				_, err := writer.Write(broadcast)
+                                if err != nil {
+					log.Printf("Error writing to websocket: %v", err)
+				}
 
 				// Shift
 				copy(buffer, buffer[nalIndex:currentPos])
 				currentPos = currentPos - nalIndex
+			}
+			if currentPos >= len(buffer) {
+			   log.Println("warning: buffer full. restart mode ...")
+			   currentPos = 0
 			}
 		}
 	}
 }
 
 func determineCameraCommand(options CameraOptions) string {
+	return h226cmd
+	/*
 	if options.AutoDetectLibCamera {
 		_, err := exec.LookPath(libcameraCommand)
 		if err == nil {
@@ -156,4 +188,5 @@ func determineCameraCommand(options CameraOptions) string {
 	} else {
 		return legacyCommand
 	}
+	*/
 }

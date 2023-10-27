@@ -1,30 +1,41 @@
 <html>
-  <head>
-    <title>h264-live-player web client demo</title>
-  </head>
-  <body>
+<head>
+	<meta charset="UTF-8">
+</head>
+<body>
+ 
+<video id="video"  autoplay muted></video>
 
-  <!-- provide WSAvcPlayer -->
-    <script type="text/javascript" src="http-live-player.js">;</script>
-    <script type="text/javascript">
+<script type="text/javascript" src="static/jmuxer.min.js"></script>
 
-var canvas = document.createElement("canvas");
-document.body.appendChild(canvas);
-
-// Create h264 player
-var uri = "ws://" + document.location.host + "/stream";
-var wsavc = new WSAvcPlayer(canvas, "webgl", 1, 35);
-wsavc.cmd({
-  "action": "init",
-  "width": 960,
-  "height": 540
+<script>
+var socketURL = 'ws://10.0.0.91:8080/stream';
+var jmuxer = new JMuxer({
+	node: 'video',
+	mode: 'video', /* available values are: both, audio and video */
+	debug: true,
+	flushingTime: 150,
 });
-wsavc.connect(uri);
+var ws = new WebSocket(socketURL);
+ws.binaryType = 'arraybuffer';
+ws.onmessage = function (event) {
+   if (event.data instanceof ArrayBuffer) {
+     let data = new Uint8Array(event.data); 
+     jmuxer.feed({
+	     video: data
+     });
+   }
+};
 
+ws.onerror = function (error) {
+	    console.error('Socket Error');
+};
 
-//expose instance for button callbacks
-window.wsavc = wsavc;
+ws.onclose = function() {
+	console.warn('socket closed');
+};
 
-    </script>
-  </body>
+</script>
+</body>
 </html>
+

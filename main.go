@@ -22,6 +22,7 @@ const (
 )
 
 func main() {
+	log.Println("Starting the application...")
 	options := stream.CameraOptions{
 		Width:          width,
 		Height:         height,
@@ -43,5 +44,6 @@ func main() {
 	// Static
 	fs := http.FileServer(http.Dir(staticDir))
 	router.PathPrefix(staticURL).Handler(handlers.CompressHandler(http.StripPrefix(staticURL, fs)))
+	log.Println("Server listening on port:", port)
 	log.Fatal(http.ListenAndServe(":"+strconv.Itoa(port), router))
 }
